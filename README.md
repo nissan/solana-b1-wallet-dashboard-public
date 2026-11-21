@@ -1,6 +1,6 @@
 # Solana B1 Wallet Dashboard
 
-A Next.js prototype for connecting a Wallet Standard wallet, viewing SOL and SPL balances, sending SOL and classic SPL tokens, and reading recent activity. [Watch the devnet demo](https://youtu.be/YVFAs9KUtLs).
+A Next.js prototype for connecting a Wallet Standard wallet, viewing SOL and SPL balances, sending SOL and classic SPL tokens, and reading recent activity. [Watch the devnet demo](https://youtu.be/ilLkL9ucQBs).
 
 This is a source snapshot of `4adaf2d2a61f0b3e976e4ab62036d7a8862e6f1f`. The private build journal, issue history and evidence artifacts are not part of this repository. The earlier video shows balances and sends, not recent activity.
 
