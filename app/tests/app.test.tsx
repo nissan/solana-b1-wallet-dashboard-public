@@ -12,7 +12,7 @@ import { systemProgram } from "@solana-program/system";
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { fetchMint, fetchToken } from "@solana-program/token";
+import { fetchMint, fetchToken, tokenProgram } from "@solana-program/token";
 import { Surfnet } from "@solana/surfpool";
 import {
   cleanup,
@@ -43,6 +43,7 @@ import { WalletButton } from "../app/components/wallet-button";
 import { formatAmount } from "../app/lib/amount";
 import { TOKEN_2022_PROGRAM_ADDRESS } from "../app/lib/holdings";
 import { AppClientProvider } from "../app/lib/client-provider";
+import { loadFixtures } from "./fixtures";
 import {
   mockWalletAddress,
   registerMockWallet,
@@ -50,9 +51,9 @@ import {
   signRequests,
 } from "./mock-wallet";
 
-// Mainnet mints, served by the forked Surfnet with their real metadata:
-// USDC is an SPL Token mint with Metaplex metadata; PYUSD is a Token-2022
-// mint with the token-metadata extension.
+// Mainnet mints, loaded into an offline Surfnet from committed fixtures with
+// their real metadata (B1-009): USDC is an SPL Token mint with Metaplex
+// metadata; PYUSD is a Token-2022 mint with the token-metadata extension.
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const PYUSD = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
 
@@ -63,12 +64,9 @@ let rpc: ReturnType<typeof createSolanaRpc>;
 let lastSignature: Signature | undefined;
 
 beforeAll(async () => {
-  surfnet = Surfnet.startWithConfig({
-    offline: false,
-    remoteRpcUrl:
-      process.env.SOLANA_TEST_REMOTE_RPC_URL ??
-      "https://api.mainnet-beta.solana.com",
-  });
+  // Offline: no remote datasource, so no test can reach mainnet.
+  surfnet = Surfnet.startWithConfig({ offline: true });
+  await loadFixtures(surfnet, [USDC, PYUSD, MEMO_PROGRAM_ADDRESS]);
   rpc = createSolanaRpc(surfnet.rpcUrl);
   const memoProgram = await rpc
     .getAccountInfo(MEMO_PROGRAM_ADDRESS, { encoding: "base64" })
@@ -481,6 +479,8 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
     `Sent 1 SOL to ${ellipsify(recipient)}`,
     `Received 0.5 SOL from ${ellipsify(sender.address)}`,
   ];
+  // 45 s: well above the app's 25 s activity budget, because the forked
+  // Surfnet can stall a read for about 10 s right after a send or a retry.
   await waitFor(
     () => {
       const texts = [...activityRows()].map((li) => li.textContent ?? "");
@@ -488,7 +488,7 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
         expect(texts.some((t) => t.startsWith(line))).toBe(true);
       }
     },
-    { timeout: 30_000 }
+    { timeout: 45_000 }
   );
   const incomingRow = [...activityRows()].find((li) =>
     li.textContent?.startsWith(expected[2])
@@ -497,7 +497,7 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
   expect(link.getAttribute("href")).toContain(
     `/tx/${incoming.context.signature}`
   );
-}, 90_000);
+}, 120_000);
 
 test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers a retry", async () => {
   // A proxy in front of Surfnet that answers 429 for the activity methods.
@@ -544,6 +544,8 @@ test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers 
 
     limited = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    // 45 s: well above the app's 25 s activity budget, because the forked
+    // Surfnet can stall a read for about 10 s right after a send or a retry.
     await waitFor(
       () => {
         expect(screen.queryByText(/Could not load recent activity/)).toBeNull();
@@ -552,9 +554,77 @@ test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers 
             screen.queryByText("No transactions yet.")
         ).toBeTruthy();
       },
-      { timeout: 30_000 }
+      { timeout: 45_000 }
     );
   } finally {
     proxy.close();
   }
-}, 60_000);
+}, 90_000);
+
+test("B1-008 S1: an incoming token transfer that names only the wallet's token account is listed", async () => {
+  // The wallet already holds USDC, so its associated token account exists.
+  surfnet.setTokenBalance(mockWalletAddress, USDC, 12_345_678);
+  const walletAta = address(await surfnet.getAta(mockWalletAddress, USDC));
+
+  // A different, freshly funded wallet sends it 1.25 USDC with a plain
+  // TransferChecked: source, mint, destination token account and authority.
+  // No associated-token-account creation, so the wallet address is not in
+  // the transaction.
+  const sender = await generateKeyPairSigner();
+  surfnet.fundSol(sender.address, 2 * LAMPORTS_PER_SOL);
+  surfnet.setTokenBalance(sender.address, USDC, 5_000_000);
+  const senderAta = address(await surfnet.getAta(sender.address, USDC));
+  const senderClient = createClient()
+    .use((c) => ({ ...c, payer: sender, identity: sender }))
+    .use(
+      solanaRpc({ rpcUrl: surfnet.rpcUrl, rpcSubscriptionsUrl: surfnet.wsUrl })
+    )
+    .use(tokenProgram());
+  const incoming = await senderClient.token.instructions
+    .transferChecked({
+      source: senderAta,
+      mint: address(USDC),
+      destination: walletAta,
+      authority: sender,
+      amount: 1_250_000n,
+      decimals: 6,
+    })
+    .sendTransaction();
+  const signature = incoming.context.signature;
+
+  const sent = await rpc
+    .getTransaction(signature, {
+      commitment: "confirmed",
+      encoding: "json",
+      maxSupportedTransactionVersion: 1,
+    })
+    .send();
+  expect(sent?.meta?.err).toBeNull();
+  const keys = sent!.transaction.message.accountKeys.map(String);
+  expect(keys).toContain(walletAta);
+  expect(keys).not.toContain(mockWalletAddress);
+  expect((await tokenBalance(mockWalletAddress, USDC)).amount).toBe("13595678");
+
+  render(<TestApp />);
+  await connectWallet();
+  await waitFor(() => expect(cell(USDC)).toBe("13.595678 USDC"), {
+    timeout: 30_000,
+  });
+
+  const expected = `Received 1.25 USDC from ${ellipsify(sender.address)}`;
+  // 45 s: well above the app's 25 s activity budget, because the forked
+  // Surfnet can stall a read for about 10 s right after a send or a retry.
+  await waitFor(
+    () => {
+      const texts = [...activityRows()].map((li) => li.textContent ?? "");
+      expect(texts.some((t) => t.startsWith(expected))).toBe(true);
+    },
+    { timeout: 45_000 }
+  );
+  const row = [...activityRows()].find((li) =>
+    li.textContent?.startsWith(expected)
+  )!;
+  expect(row.querySelector("a")!.getAttribute("href")).toContain(
+    `/tx/${signature}`
+  );
+}, 90_000);

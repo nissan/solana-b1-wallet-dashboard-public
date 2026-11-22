@@ -60,7 +60,7 @@ export function ActivityCard() {
     >
       <h2 className="text-sm font-semibold">Recent activity</h2>
       <p className="mt-1 text-xs text-muted">
-        The last 20 transactions that include this wallet&apos;s address.
+        The last 20 transactions that include this wallet or its token accounts.
       </p>
       {isLoading && (
         <p className="mt-4 text-xs text-muted" role="status">
