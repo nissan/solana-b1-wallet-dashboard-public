@@ -1,0 +1,22 @@
+{
+  "name": "memo-program",
+  "why": "Memo program targeted by @solana-program/memo 0.15 (the app client installs its plugin)",
+  "address": "Memo4c2pN8afCj432Lb7RMVKi9PbQnnW7ewFFaV3oAH",
+  "source": {
+    "cluster": "mainnet-beta",
+    "slot": 472494036,
+    "capturedAt": "2026-11-22T09:40:40.133Z"
+  },
+  "account": {
+    "lamports": 1141440,
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "executable": true,
+    "data": "AgAAAPNrepjNgwQl3xhuSTRPUzNkFgVGwStDQoRj3mbb0R9/"
+  },
+  "program": {
+    "programData": "HPD8Gxq19uaXy6zDaEGBtkb9NEZwd4jRTnXQ4GM8qe86",
+    "elfBytes": 2304,
+    "elfSha256": "0c92063c6838d9ad8af50aaefea9a166b5bb41a2bfa2bc6327d7db320849bc78",
+    "bundledAt": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+  }
+}

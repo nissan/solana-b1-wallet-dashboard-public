@@ -1,0 +1,11 @@
+{
+  "name": "pyusd-metadata",
+  "why": "PYUSD Metaplex metadata PDA, read before the Token-2022 extension",
+  "address": "5mf2C8LGCjkWPb4inZNEjyF8WpXQpfNG2pKgsJqy4Rfg",
+  "source": {
+    "cluster": "mainnet-beta",
+    "slot": 472494036,
+    "capturedAt": "2026-11-22T09:40:40.133Z"
+  },
+  "account": null
+}

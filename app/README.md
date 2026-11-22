@@ -75,4 +75,14 @@ The tests point `AppClientProvider` at Surfpool through its optional URL overrid
 
 Surfpool's native test runtime supports Linux x64 and macOS x64/arm64. On Windows, run the tests in a supported Linux x64 WSL environment with Node.js 24 or newer. No separate Solana CLI installation is required.
 
-The tests use `Surfnet.startWithConfig` with remote account fallback enabled so Surfpool can fetch the deployed Memo program. An internet connection and an available mainnet RPC are required. The default is `https://api.mainnet-beta.solana.com`; set `SOLANA_TEST_REMOTE_RPC_URL` to use another mainnet RPC if needed. Test transactions are sent only to Surfpool's local RPC, never to the upstream network. No Memo binary or license fixture is bundled, and no Solana CLI dump or deployment step is needed.
+The tests start Surfpool offline (`Surfnet.startWithConfig({ offline: true })`), so no test can reach mainnet or any other remote RPC. The mainnet accounts they read are loaded from fixtures in [`tests/fixtures/`](tests/fixtures/): the USDC and PYUSD mints, the USDC Metaplex metadata account, the PYUSD metadata address (recorded as absent on mainnet) and the memo program. Each fixture records its address, lamports, owner, executable flag, base64 data, and the mainnet slot and date it was captured. A mainnet account without a fixture reads as absent.
+
+`setAccount` cannot mark an account executable, so the memo program (`Memo4c2p…`, the one `@solana-program/memo` targets) is deployed from the SPL Memo v2 binary that Surfpool bundles at `MemoSq4g…`, but only after the loader checks it against the ELF hash captured from mainnet. The two were byte-identical on 22 November 2026. No program binary is committed.
+
+To refresh the fixtures, run this by hand (never in CI) and review the `git diff`:
+
+```bash
+node scripts/capture-fixtures.mts   # public mainnet RPC; --rpc <url> or MAINNET_RPC_URL for another
+```
+
+The script refuses an RPC whose genesis hash is not mainnet, only reads accounts and prints only the RPC host. To make a new test read another mainnet account, add it to the script's list, capture, and pass its address to `loadFixtures` so a missing fixture is reported by name.
