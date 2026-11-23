@@ -51,9 +51,10 @@ export function describeActivity(a: Activity): string {
 }
 
 /**
- * Said when the wallet owns more token accounts than a load reads (B1-011),
- * e.g. "Only 10 of this wallet's 13 token accounts were read, so a deposit
- * into one of the other 3 may be missing."
+ * Said when a load left out a token account holding a balance (B1-012), e.g.
+ * "Only 10 of this wallet's 12 token accounts holding a balance were read, so
+ * a deposit into one of the other 2 may be missing." Takes the counts of
+ * accounts holding a balance: unread empty accounts give no warning.
  */
 export function unreadTokenAccountsNote({
   read,
@@ -62,16 +63,17 @@ export function unreadTokenAccountsNote({
   const unread = total - read;
   if (unread <= 0) return null;
   const others = unread === 1 ? "the other one" : `one of the other ${unread}`;
-  return `Only ${read} of this wallet's ${total} token accounts were read, so a deposit into ${others} may be missing.`;
+  return `Only ${read} of this wallet's ${total} token accounts holding a balance were read, so a deposit into ${others} may be missing.`;
 }
 
 export function ActivityCard() {
   const client = useAppClient();
   const connected = useConnectedWallet(client);
   const owner = connected ? address(connected.account.address) : undefined;
-  const { activity, tokenAccounts, error, isLoading, isRetrying, retry } =
+  const { activity, fundedTokenAccounts, error, isLoading, isRetrying, retry } =
     useActivity(owner);
-  const unreadNote = tokenAccounts && unreadTokenAccountsNote(tokenAccounts);
+  const unreadNote =
+    fundedTokenAccounts && unreadTokenAccountsNote(fundedTokenAccounts);
   const { getExplorerUrl } = useCluster();
 
   return (

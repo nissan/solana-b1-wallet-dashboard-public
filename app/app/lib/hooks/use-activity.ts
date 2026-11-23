@@ -22,6 +22,7 @@ export function useActivity(owner?: Address) {
   return {
     activity: data?.activity ?? null,
     tokenAccounts: data?.tokenAccounts ?? null,
+    fundedTokenAccounts: data?.fundedTokenAccounts ?? null,
     error: error as Error | undefined,
     isLoading,
     isRetrying: isValidating && error != null,

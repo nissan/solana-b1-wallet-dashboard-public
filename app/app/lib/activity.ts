@@ -21,7 +21,8 @@ const SIGNATURE_CONCURRENCY = 5;
 // Token accounts whose signatures are read per load. Bounds the cost of a load
 // at 2 listing calls + 1 owner call + this many lookups, whatever the wallet
 // holds. Transfers into accounts beyond the cap are not listed; the Recent
-// activity card states this number and warns when the wallet has more (B1-011).
+// activity card states this number (B1-011) and warns when an account holding
+// a balance was not read (B1-012).
 export const MAX_TOKEN_ACCOUNTS = 10;
 // SPL Token and Token-2022 accounts share the base layout: mint (32 bytes),
 // owner (32), then the amount as a little-endian u64 at byte 64.
@@ -72,7 +73,10 @@ export type TokenAccountCounts = { read: number; total: number };
 
 export type ActivityResult = {
   activity: Activity[];
+  /** Every token account, empty ones included. */
   tokenAccounts: TokenAccountCounts;
+  /** Only the token accounts holding a balance (B1-012). */
+  fundedTokenAccounts: TokenAccountCounts;
 };
 
 export type SignatureEntry = {
@@ -115,6 +119,15 @@ export function mergeSignatures<T extends SignatureEntry>(
 export type TokenAccountRef = { address: Address; amount: bigint };
 
 /**
+ * The one rule for whether a token account holds a balance. The reading order
+ * (pickTokenAccounts) and the warning's count (fundedCounts) both use it, so
+ * they cannot disagree about which accounts could hide a deposit (B1-012).
+ */
+export function holdsBalance(account: TokenAccountRef): boolean {
+  return account.amount > 0n;
+}
+
+/**
  * Chooses which token accounts to read, at most `cap`: accounts holding a
  * balance first, then empty ones, each group in address order, so the same
  * holdings always give the same choice.
@@ -126,11 +139,28 @@ export function pickTokenAccounts(
   return [...accounts]
     .sort(
       (a, b) =>
-        Number(b.amount > 0n) - Number(a.amount > 0n) ||
+        Number(holdsBalance(b)) - Number(holdsBalance(a)) ||
         (a.address < b.address ? -1 : a.address > b.address ? 1 : 0)
     )
     .slice(0, cap)
     .map((a) => a.address);
+}
+
+/**
+ * How many of the accounts holding a balance are among `picked`, out of how
+ * many there are. Counted from the picked addresses, not inferred from the
+ * order, so the count stays true even if the order changes.
+ */
+export function fundedCounts(
+  accounts: readonly TokenAccountRef[],
+  picked: readonly Address[]
+): TokenAccountCounts {
+  const read = new Set(picked);
+  const funded = accounts.filter(holdsBalance);
+  return {
+    read: funded.filter((a) => read.has(a.address)).length,
+    total: funded.length,
+  };
 }
 
 function readAmount(base64: string): bigint {
@@ -175,7 +205,8 @@ async function mapLimit<T, R>(
  * Token-2022 accounts are read too and their signatures merged with the
  * owner's. The owner's own lookup runs alongside the account listing. The
  * result says how many token accounts were read out of how many the two
- * listings returned, so the card can warn when some were skipped.
+ * listings returned, in all and counting only those holding a balance, so the
+ * card can warn when an account that could hide a deposit was skipped.
  */
 export async function fetchActivity(
   rpc: Rpc<SolanaRpcApi>,
@@ -249,6 +280,7 @@ export async function fetchActivity(
   return {
     activity,
     tokenAccounts: { read: picked.length, total: owned.length },
+    fundedTokenAccounts: fundedCounts(owned, picked),
   };
 }
 
