@@ -711,6 +711,53 @@ async function countTokenAccounts(owner: string): Promise<number> {
   return lists.reduce((n, { value }) => n + value.length, 0);
 }
 
+/**
+ * The wallet's token accounts holding a balance, read from Surfnet (B1-012).
+ * Decodes the amount itself (u64 at byte 64) rather than using the app's code.
+ */
+async function countFundedTokenAccounts(owner: string): Promise<number> {
+  const lists = await Promise.all(
+    [TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM_ADDRESS].map((programId) =>
+      rpc
+        .getTokenAccountsByOwner(
+          address(owner),
+          { programId },
+          { encoding: "base64", commitment: "confirmed" }
+        )
+        .send()
+    )
+  );
+  return lists
+    .flatMap(({ value }) => value)
+    .filter(({ account }) => {
+      const data = Buffer.from(account.data[0], "base64");
+      return data.readBigUInt64LE(64) > 0n;
+    }).length;
+}
+
+/** Creates `count` new SPL Token mints and gives the wallet `amount` of each. */
+async function addTokenAccounts(count: number, amount: number) {
+  const mint = getMintEncoder();
+  for (let i = 0; i < count; i++) {
+    const { address: mintAddress } = await generateKeyPairSigner();
+    surfnet.setAccount(
+      mintAddress,
+      1_461_600,
+      new Uint8Array(
+        mint.encode({
+          mintAuthority: some(address(mockWalletAddress)),
+          supply: 1_000_000n,
+          decimals: 6,
+          isInitialized: true,
+          freezeAuthority: none(),
+        })
+      ),
+      TOKEN_PROGRAM_ADDRESS
+    );
+    surfnet.setTokenBalance(mockWalletAddress, mintAddress, amount);
+  }
+}
+
 async function loadedActivityCard() {
   const card = screen.getByRole("region", { name: "Recent activity" });
   // 30 s: twice the app's 15 s activity budget (B1-010).
@@ -737,35 +784,18 @@ test("B1-011 S1: the card says it reads up to 10 token accounts, and gives no wa
   expect(
     within(card).getByRole("heading").nextElementSibling?.textContent
   ).toBe(ACTIVITY_SCOPE);
-  expect(within(card).queryByText(/token accounts were read/)).toBeNull();
+  // /were read/ matches the B1-011 and the B1-012 warning wording.
+  expect(within(card).queryByText(/were read/)).toBeNull();
 }, 60_000);
 
-// Last in the file: it leaves the wallet above the limit for any test after it.
-test("B1-011 S2: a wallet with more token accounts than the limit is told how many were read", async () => {
-  // MAX_TOKEN_ACCOUNTS + 3 new SPL Token mints, each with a balance in the
-  // wallet's associated token account, so the wallet is over the limit
-  // whatever earlier tests left behind.
-  const mint = getMintEncoder();
-  for (let i = 0; i < MAX_TOKEN_ACCOUNTS + 3; i++) {
-    const { address: mintAddress } = await generateKeyPairSigner();
-    surfnet.setAccount(
-      mintAddress,
-      1_461_600,
-      new Uint8Array(
-        mint.encode({
-          mintAuthority: some(address(mockWalletAddress)),
-          supply: 1_000_000n,
-          decimals: 6,
-          isInitialized: true,
-          freezeAuthority: none(),
-        })
-      ),
-      TOKEN_PROGRAM_ADDRESS
-    );
-    surfnet.setTokenBalance(mockWalletAddress, mintAddress, 1_000_000);
-  }
+test("B1-012 S1: a wallet over the limit only with empty token accounts gets no warning", async () => {
+  const fundedBefore = await countFundedTokenAccounts(mockWalletAddress);
+  expect(fundedBefore).toBeLessThanOrEqual(MAX_TOKEN_ACCOUNTS);
+  // MAX_TOKEN_ACCOUNTS + 3 new SPL Token accounts holding nothing.
+  await addTokenAccounts(MAX_TOKEN_ACCOUNTS + 3, 0);
   const total = await countTokenAccounts(mockWalletAddress);
   expect(total).toBeGreaterThanOrEqual(MAX_TOKEN_ACCOUNTS + 3);
+  expect(await countFundedTokenAccounts(mockWalletAddress)).toBe(fundedBefore);
 
   render(<TestApp />);
   await connectWallet();
@@ -773,7 +803,27 @@ test("B1-011 S2: a wallet with more token accounts than the limit is told how ma
   expect(
     within(card).getByRole("heading").nextElementSibling?.textContent
   ).toBe(ACTIVITY_SCOPE);
-  expect(within(card).getByText(/token accounts were read/).textContent).toBe(
-    `Only ${MAX_TOKEN_ACCOUNTS} of this wallet's ${total} token accounts were read, so a deposit into one of the other ${total - MAX_TOKEN_ACCOUNTS} may be missing.`
+  expect(within(card).queryByText(/were read/)).toBeNull();
+}, 60_000);
+
+// Last in the file: it leaves the wallet above the limit for any test after it.
+// Replaces the B1-011 S2 Surfnet test: the warning now counts only token
+// accounts holding a balance (B1-012).
+test("B1-012 S2: a wallet with more token accounts holding a balance than the limit is told how many of those were read", async () => {
+  // MAX_TOKEN_ACCOUNTS + 3 new SPL Token mints, each with a balance in the
+  // wallet's associated token account, so the wallet is over the limit
+  // whatever earlier tests left behind.
+  await addTokenAccounts(MAX_TOKEN_ACCOUNTS + 3, 1_000_000);
+  const funded = await countFundedTokenAccounts(mockWalletAddress);
+  expect(funded).toBeGreaterThanOrEqual(MAX_TOKEN_ACCOUNTS + 3);
+
+  render(<TestApp />);
+  await connectWallet();
+  const card = await loadedActivityCard();
+  expect(
+    within(card).getByRole("heading").nextElementSibling?.textContent
+  ).toBe(ACTIVITY_SCOPE);
+  expect(within(card).getByText(/were read/).textContent).toBe(
+    `Only ${MAX_TOKEN_ACCOUNTS} of this wallet's ${funded} token accounts holding a balance were read, so a deposit into one of the other ${funded - MAX_TOKEN_ACCOUNTS} may be missing.`
   );
 }, 60_000);
