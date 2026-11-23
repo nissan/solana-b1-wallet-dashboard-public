@@ -20,7 +20,8 @@ export function useActivity(owner?: Address) {
     { shouldRetryOnError: false, revalidateOnFocus: false }
   );
   return {
-    activity: data ?? null,
+    activity: data?.activity ?? null,
+    tokenAccounts: data?.tokenAccounts ?? null,
     error: error as Error | undefined,
     isLoading,
     isRetrying: isValidating && error != null,

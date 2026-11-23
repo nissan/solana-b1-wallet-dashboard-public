@@ -20,7 +20,8 @@ const FETCH_TIMEOUT_MS = 15_000;
 const SIGNATURE_CONCURRENCY = 5;
 // Token accounts whose signatures are read per load. Bounds the cost of a load
 // at 2 listing calls + 1 owner call + this many lookups, whatever the wallet
-// holds. Transfers into accounts beyond the cap are not listed.
+// holds. Transfers into accounts beyond the cap are not listed; the Recent
+// activity card states this number and warns when the wallet has more (B1-011).
 export const MAX_TOKEN_ACCOUNTS = 10;
 // SPL Token and Token-2022 accounts share the base layout: mint (32 bytes),
 // owner (32), then the amount as a little-endian u64 at byte 64.
@@ -64,6 +65,14 @@ type ParsedTransaction = {
   transaction: {
     message: { accountKeys: { pubkey: string; signer: boolean }[] };
   };
+};
+
+/** How many of the owner's token accounts a load read, out of how many it owns. */
+export type TokenAccountCounts = { read: number; total: number };
+
+export type ActivityResult = {
+  activity: Activity[];
+  tokenAccounts: TokenAccountCounts;
 };
 
 export type SignatureEntry = {
@@ -164,12 +173,14 @@ async function mapLimit<T, R>(
  * A token transfer into an existing token account names that account but not
  * the owner, so up to MAX_TOKEN_ACCOUNTS of the owner's SPL Token and
  * Token-2022 accounts are read too and their signatures merged with the
- * owner's. The owner's own lookup runs alongside the account listing.
+ * owner's. The owner's own lookup runs alongside the account listing. The
+ * result says how many token accounts were read out of how many the two
+ * listings returned, so the card can warn when some were skipped.
  */
 export async function fetchActivity(
   rpc: Rpc<SolanaRpcApi>,
   owner: Address
-): Promise<Activity[]> {
+): Promise<ActivityResult> {
   const abortSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const signaturesFor = (a: Address) =>
     rpc
@@ -194,14 +205,13 @@ export async function fetchActivity(
     signaturesFor(owner),
     listAccounts,
   ]);
-  const picked = pickTokenAccounts(
-    tokenAccounts.flatMap(({ value }) =>
-      value.map(({ pubkey, account }) => ({
-        address: pubkey,
-        amount: readAmount(account.data[0]),
-      }))
-    )
+  const owned = tokenAccounts.flatMap(({ value }) =>
+    value.map(({ pubkey, account }) => ({
+      address: pubkey,
+      amount: readAmount(account.data[0]),
+    }))
   );
+  const picked = pickTokenAccounts(owned);
   const tokenSignatures = await mapLimit(
     picked,
     SIGNATURE_CONCURRENCY,
@@ -236,7 +246,10 @@ export async function fetchActivity(
     tokens as (Activity & { mint: Address; programId: Address })[],
     abortSignal
   );
-  return activity;
+  return {
+    activity,
+    tokenAccounts: { read: picked.length, total: owned.length },
+  };
 }
 
 export function describe(

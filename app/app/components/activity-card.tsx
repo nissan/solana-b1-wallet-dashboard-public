@@ -4,7 +4,11 @@ import { address } from "@solana/kit";
 import { useConnectedWallet } from "@solana/kit-plugin-wallet/react";
 import { useAppClient } from "../lib/client-provider";
 import { useActivity } from "../lib/hooks/use-activity";
-import type { Activity } from "../lib/activity";
+import {
+  MAX_TOKEN_ACCOUNTS,
+  type Activity,
+  type TokenAccountCounts,
+} from "../lib/activity";
 import { formatAmount } from "../lib/amount";
 import { ellipsify } from "../lib/explorer";
 import { useCluster } from "./cluster-context";
@@ -46,11 +50,28 @@ export function describeActivity(a: Activity): string {
   return a.failed ? `Failed: ${text}` : text;
 }
 
+/**
+ * Said when the wallet owns more token accounts than a load reads (B1-011),
+ * e.g. "Only 10 of this wallet's 13 token accounts were read, so a deposit
+ * into one of the other 3 may be missing."
+ */
+export function unreadTokenAccountsNote({
+  read,
+  total,
+}: TokenAccountCounts): string | null {
+  const unread = total - read;
+  if (unread <= 0) return null;
+  const others = unread === 1 ? "the other one" : `one of the other ${unread}`;
+  return `Only ${read} of this wallet's ${total} token accounts were read, so a deposit into ${others} may be missing.`;
+}
+
 export function ActivityCard() {
   const client = useAppClient();
   const connected = useConnectedWallet(client);
   const owner = connected ? address(connected.account.address) : undefined;
-  const { activity, error, isLoading, isRetrying, retry } = useActivity(owner);
+  const { activity, tokenAccounts, error, isLoading, isRetrying, retry } =
+    useActivity(owner);
+  const unreadNote = tokenAccounts && unreadTokenAccountsNote(tokenAccounts);
   const { getExplorerUrl } = useCluster();
 
   return (
@@ -60,8 +81,10 @@ export function ActivityCard() {
     >
       <h2 className="text-sm font-semibold">Recent activity</h2>
       <p className="mt-1 text-xs text-muted">
-        The last 20 transactions that include this wallet or its token accounts.
+        The last 20 transactions for this wallet and up to {MAX_TOKEN_ACCOUNTS}{" "}
+        of its token accounts.
       </p>
+      {unreadNote && <p className="mt-1 text-xs text-muted">{unreadNote}</p>}
       {isLoading && (
         <p className="mt-4 text-xs text-muted" role="status">
           Loading recent activity...
