@@ -1,7 +1,15 @@
-import { address, type Signature } from "@solana/kit";
+import {
+  address,
+  type Address,
+  type Rpc,
+  type Signature,
+  type SolanaRpcApi,
+} from "@solana/kit";
+import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import { expect, test } from "vitest";
 import {
   describe,
+  fetchActivity,
   MAX_TOKEN_ACCOUNTS,
   mergeSignatures,
   pickTokenAccounts,
@@ -128,4 +136,69 @@ test("B1-008: the choice of token accounts does not depend on input order", () =
   expect(pickTokenAccounts(reversed)).toEqual(pickTokenAccounts(accounts));
   expect(pickTokenAccounts(accounts, 3)).toEqual([1, 2, 4].map(tokenAccount));
   expect(pickTokenAccounts([])).toEqual([]);
+});
+
+/**
+ * An RPC stand-in that records each method called. The wallet and its token
+ * accounts have no signatures, so a load reads nothing past the lookups.
+ */
+function stubRpc(splAccounts: number, token2022Accounts: number) {
+  const calls: string[] = [];
+  const amount = Buffer.from(new BigUint64Array([5n]).buffer).toString(
+    "base64"
+  );
+  const accounts = (count: number, offset: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      pubkey: tokenAccount(offset + i),
+      account: { data: [amount, "base64"] },
+    }));
+  const answers: Record<string, (...args: unknown[]) => unknown> = {
+    getTokenAccountsByOwner: (_owner, filter) => ({
+      value:
+        (filter as { programId: Address }).programId === TOKEN_PROGRAM_ADDRESS
+          ? accounts(splAccounts, 0)
+          : accounts(token2022Accounts, splAccounts),
+    }),
+    getSignaturesForAddress: () => [],
+  };
+  const rpc = new Proxy(
+    {},
+    {
+      get:
+        (_, method: string) =>
+        (...args: unknown[]) => {
+          calls.push(method);
+          const answer = answers[method];
+          if (!answer) throw new Error(`unexpected RPC call ${method}`);
+          return { send: async () => answer(...args) };
+        },
+    }
+  ) as Rpc<SolanaRpcApi>;
+  return { rpc, calls };
+}
+
+const owner = address("ET1aQ56Cz8fYsjCFgddfqeheAQpRLzX4skM8AsaYAQjx");
+
+test("B1-011 S2: fetchActivity reports how many token accounts it read out of how many, with no extra RPC calls", async () => {
+  // 9 SPL Token and 4 Token-2022 accounts: 13, three over the limit.
+  const { rpc, calls } = stubRpc(9, 4);
+  const result = await fetchActivity(rpc, owner);
+  expect(result.tokenAccounts).toEqual({ read: MAX_TOKEN_ACCOUNTS, total: 13 });
+  expect(result.activity).toEqual([]);
+  // As before B1-011: two listings, then one lookup for the wallet and one
+  // per token account read.
+  expect(calls.sort()).toEqual(
+    [
+      ...Array(2).fill("getTokenAccountsByOwner"),
+      ...Array(1 + MAX_TOKEN_ACCOUNTS).fill("getSignaturesForAddress"),
+    ].sort()
+  );
+});
+
+test("B1-011 S1: within the limit every token account is read and the counts match", async () => {
+  const { rpc, calls } = stubRpc(3, 1);
+  const result = await fetchActivity(rpc, owner);
+  expect(result.tokenAccounts).toEqual({ read: 4, total: 4 });
+  expect(calls.filter((c) => c === "getSignaturesForAddress")).toHaveLength(5);
+  expect(calls).toHaveLength(7);
 });

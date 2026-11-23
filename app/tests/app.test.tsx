@@ -5,6 +5,8 @@ import {
   createSolanaRpc,
   generateKeyPairSigner,
   lamports,
+  none,
+  some,
   type Signature,
 } from "@solana/kit";
 import { solanaRpc } from "@solana/kit-plugin-rpc";
@@ -12,7 +14,13 @@ import { systemProgram } from "@solana-program/system";
 import { once } from "node:events";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { fetchMint, fetchToken, tokenProgram } from "@solana-program/token";
+import {
+  fetchMint,
+  fetchToken,
+  getMintEncoder,
+  TOKEN_PROGRAM_ADDRESS,
+  tokenProgram,
+} from "@solana-program/token";
 import { Surfnet } from "@solana/surfpool";
 import {
   cleanup,
@@ -20,6 +28,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { useMemo } from "react";
 import { Toaster } from "sonner";
@@ -38,6 +47,7 @@ import { TokenCard } from "../app/components/actions/token-card";
 import { ClusterProvider } from "../app/components/cluster-context";
 import { HoldingsCard } from "../app/components/holdings-card";
 import { ActivityCard } from "../app/components/activity-card";
+import { MAX_TOKEN_ACCOUNTS } from "../app/lib/activity";
 import { ellipsify } from "../app/lib/explorer";
 import { WalletButton } from "../app/components/wallet-button";
 import { formatAmount } from "../app/lib/amount";
@@ -680,3 +690,90 @@ test("B1-008 S1: an incoming token transfer that names only the wallet's token a
     `/tx/${signature}`
   );
 }, 90_000);
+
+// B1-011: the line under the Recent activity heading, with the number taken
+// from the constant the reads use.
+const ACTIVITY_SCOPE = `The last 20 transactions for this wallet and up to ${MAX_TOKEN_ACCOUNTS} of its token accounts.`;
+
+/** SPL Token and Token-2022 accounts the wallet owns, read from Surfnet. */
+async function countTokenAccounts(owner: string): Promise<number> {
+  const lists = await Promise.all(
+    [TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM_ADDRESS].map((programId) =>
+      rpc
+        .getTokenAccountsByOwner(
+          address(owner),
+          { programId },
+          { encoding: "base64", commitment: "confirmed" }
+        )
+        .send()
+    )
+  );
+  return lists.reduce((n, { value }) => n + value.length, 0);
+}
+
+async function loadedActivityCard() {
+  const card = screen.getByRole("region", { name: "Recent activity" });
+  // 30 s: twice the app's 15 s activity budget (B1-010).
+  await waitFor(
+    () =>
+      expect(
+        activityRows().length > 0 ||
+          within(card).queryByText("No transactions yet.")
+      ).toBeTruthy(),
+    { timeout: 30_000 }
+  );
+  return card;
+}
+
+test("B1-011 S1: the card says it reads up to 10 token accounts, and gives no warning within the limit", async () => {
+  surfnet.setTokenBalance(mockWalletAddress, USDC, 12_345_678);
+  const total = await countTokenAccounts(mockWalletAddress);
+  expect(total).toBeGreaterThan(0);
+  expect(total).toBeLessThanOrEqual(MAX_TOKEN_ACCOUNTS);
+
+  render(<TestApp />);
+  await connectWallet();
+  const card = await loadedActivityCard();
+  expect(
+    within(card).getByRole("heading").nextElementSibling?.textContent
+  ).toBe(ACTIVITY_SCOPE);
+  expect(within(card).queryByText(/token accounts were read/)).toBeNull();
+}, 60_000);
+
+// Last in the file: it leaves the wallet above the limit for any test after it.
+test("B1-011 S2: a wallet with more token accounts than the limit is told how many were read", async () => {
+  // MAX_TOKEN_ACCOUNTS + 3 new SPL Token mints, each with a balance in the
+  // wallet's associated token account, so the wallet is over the limit
+  // whatever earlier tests left behind.
+  const mint = getMintEncoder();
+  for (let i = 0; i < MAX_TOKEN_ACCOUNTS + 3; i++) {
+    const { address: mintAddress } = await generateKeyPairSigner();
+    surfnet.setAccount(
+      mintAddress,
+      1_461_600,
+      new Uint8Array(
+        mint.encode({
+          mintAuthority: some(address(mockWalletAddress)),
+          supply: 1_000_000n,
+          decimals: 6,
+          isInitialized: true,
+          freezeAuthority: none(),
+        })
+      ),
+      TOKEN_PROGRAM_ADDRESS
+    );
+    surfnet.setTokenBalance(mockWalletAddress, mintAddress, 1_000_000);
+  }
+  const total = await countTokenAccounts(mockWalletAddress);
+  expect(total).toBeGreaterThanOrEqual(MAX_TOKEN_ACCOUNTS + 3);
+
+  render(<TestApp />);
+  await connectWallet();
+  const card = await loadedActivityCard();
+  expect(
+    within(card).getByRole("heading").nextElementSibling?.textContent
+  ).toBe(ACTIVITY_SCOPE);
+  expect(within(card).getByText(/token accounts were read/).textContent).toBe(
+    `Only ${MAX_TOKEN_ACCOUNTS} of this wallet's ${total} token accounts were read, so a deposit into one of the other ${total - MAX_TOKEN_ACCOUNTS} may be missing.`
+  );
+}, 60_000);
