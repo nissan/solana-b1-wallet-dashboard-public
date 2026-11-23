@@ -10,7 +10,7 @@ import {
 import { solanaRpc } from "@solana/kit-plugin-rpc";
 import { systemProgram } from "@solana-program/system";
 import { once } from "node:events";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fetchMint, fetchToken, tokenProgram } from "@solana-program/token";
 import { Surfnet } from "@solana/surfpool";
@@ -479,8 +479,8 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
     `Sent 1 SOL to ${ellipsify(recipient)}`,
     `Received 0.5 SOL from ${ellipsify(sender.address)}`,
   ];
-  // 45 s: well above the app's 25 s activity budget, because the forked
-  // Surfnet can stall a read for about 10 s right after a send or a retry.
+  // 30 s: twice the app's 15 s activity budget, so a load that uses all of
+  // it still finishes inside the wait (B1-010).
   await waitFor(
     () => {
       const texts = [...activityRows()].map((li) => li.textContent ?? "");
@@ -488,7 +488,7 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
         expect(texts.some((t) => t.startsWith(line))).toBe(true);
       }
     },
-    { timeout: 45_000 }
+    { timeout: 30_000 }
   );
   const incomingRow = [...activityRows()].find((li) =>
     li.textContent?.startsWith(expected[2])
@@ -497,7 +497,7 @@ test("B1-004 S1: activity lists sends and receipts in plain words with explorer 
   expect(link.getAttribute("href")).toContain(
     `/tx/${incoming.context.signature}`
   );
-}, 120_000);
+}, 90_000);
 
 test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers a retry", async () => {
   // A proxy in front of Surfnet that answers 429 for the activity methods.
@@ -544,8 +544,8 @@ test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers 
 
     limited = false;
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    // 45 s: well above the app's 25 s activity budget, because the forked
-    // Surfnet can stall a read for about 10 s right after a send or a retry.
+    // 30 s: twice the app's 15 s activity budget, so a load that uses all of
+    // it still finishes inside the wait (B1-010).
     await waitFor(
       () => {
         expect(screen.queryByText(/Could not load recent activity/)).toBeNull();
@@ -554,12 +554,64 @@ test("B1-004 S2: a rate-limited activity RPC leaves balances working and offers 
             screen.queryByText("No transactions yet.")
         ).toBeTruthy();
       },
-      { timeout: 45_000 }
+      { timeout: 30_000 }
     );
   } finally {
     proxy.close();
   }
-}, 90_000);
+}, 60_000);
+
+test("B1-010 S1: an RPC that never answers the activity calls gets Retry within 15 s while balances render", async () => {
+  // A proxy in front of Surfnet that holds the activity calls open and never
+  // answers them; every other call (balances included) is forwarded.
+  const stalled: ServerResponse[] = [];
+  let firstStalledAt: number | undefined;
+  const proxy: Server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const body = Buffer.concat(chunks).toString();
+    if (/getSignaturesForAddress|getTransaction/.test(body)) {
+      firstStalledAt ??= Date.now();
+      stalled.push(res);
+      return;
+    }
+    try {
+      const upstream = await fetch(surfnet.rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      res
+        .writeHead(upstream.status, { "content-type": "application/json" })
+        .end(await upstream.text());
+    } catch {
+      res.writeHead(502).end();
+    }
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  const { port } = proxy.address() as AddressInfo;
+  try {
+    render(<TestApp rpcUrl={`http://127.0.0.1:${port}`} />);
+    await connectWallet();
+    await waitFor(() => expect(cell("SOL")).toBe("5 SOL"), { timeout: 10_000 });
+    // 15 s budget plus a 2 s margin for rendering; well under the 25 s
+    // budget B1-008 used, so the old budget fails here.
+    await screen.findByText(
+      /Could not load recent activity/,
+      {},
+      { timeout: 20_000 }
+    );
+    const elapsed = Date.now() - firstStalledAt!;
+    expect(elapsed).toBeLessThan(17_000);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(cell("SOL")).toBe("5 SOL");
+  } finally {
+    for (const res of stalled) res.destroy();
+    proxy.closeAllConnections();
+    proxy.close();
+  }
+}, 60_000);
 
 test("B1-008 S1: an incoming token transfer that names only the wallet's token account is listed", async () => {
   // The wallet already holds USDC, so its associated token account exists.
@@ -612,14 +664,14 @@ test("B1-008 S1: an incoming token transfer that names only the wallet's token a
   });
 
   const expected = `Received 1.25 USDC from ${ellipsify(sender.address)}`;
-  // 45 s: well above the app's 25 s activity budget, because the forked
-  // Surfnet can stall a read for about 10 s right after a send or a retry.
+  // 30 s: twice the app's 15 s activity budget, so a load that uses all of
+  // it still finishes inside the wait (B1-010).
   await waitFor(
     () => {
       const texts = [...activityRows()].map((li) => li.textContent ?? "");
       expect(texts.some((t) => t.startsWith(expected))).toBe(true);
     },
-    { timeout: 45_000 }
+    { timeout: 30_000 }
   );
   const row = [...activityRows()].find((li) =>
     li.textContent?.startsWith(expected)

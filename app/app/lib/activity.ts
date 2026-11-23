@@ -10,11 +10,11 @@ import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import { attachSymbols, TOKEN_2022_PROGRAM_ADDRESS } from "./holdings";
 
 const LIMIT = 20;
-// Raised from 15 s for B1-008: on the forked-mainnet test network a
-// getTokenAccountsByOwner call sometimes stalls for about 10 s right after a
-// send, and at 15 s the B1-004 send test failed 3 of 4 local runs (2 of 2 passed
-// at 25 s). It stays below that test's 30 s wait. See docs/evidence/B1-008.md.
-const FETCH_TIMEOUT_MS = 25_000;
+// The whole load (listings, signature lookups, transactions, symbols) shares
+// one 15 s budget; past it the card shows its error and Retry (B1-010). B1-008
+// had raised it to 25 s only because the forked-mainnet test network stalled
+// reads for about 10 s; the tests run offline since B1-009.
+const FETCH_TIMEOUT_MS = 15_000;
 // Signature lookups in flight at once. A wallet with many token accounts would
 // otherwise burst one request per account at the RPC and its rate limit.
 const SIGNATURE_CONCURRENCY = 5;
